@@ -40,36 +40,10 @@ static SV *default_loop_sv;
 static HV *stash_loop;
 
 /* handle stashes */
-static HV
-    *stash_async,
-    *stash_check,
-    *stash_fs_event,
-    *stash_fs_poll,
-    *stash_handle,
-    *stash_idle,
-    *stash_named_pipe,
-    *stash_poll,
-    *stash_prepare,
-    *stash_process,
-    *stash_stream,
-    *stash_tcp,
-    *stash_timer,
-    *stash_tty,
-    *stash_udp,
-    *stash_signal,
-    *stash_file;
+static HV *handle_type2stash[UV_HANDLE_TYPE_MAX] = {NULL};
 
 /* request stashes */
-static HV
-    *stash_req,
-    *stash_connect,
-    *stash_write,
-    *stash_shutdown,
-    *stash_udp_send,
-    *stash_fs,
-    *stash_work,
-    *stash_getaddrinfo,
-    *stash_getnameinfo;
+static HV *request_type2stash[UV_REQ_TYPE_MAX] = {NULL};
 
 static SV * s_get_cv (SV *cb_sv)
 {
@@ -177,34 +151,19 @@ static void handle_data_destroy(handle_data_t *data_ptr)
 
 static handle_data_t* handle_data_new(const uv_handle_type type)
 {
-    handle_data_t *data_ptr = (handle_data_t *)malloc(sizeof(handle_data_t));
+    handle_data_t *data_ptr;
+	
+	if( type < 0 || type >= UV_HANDLE_TYPE_MAX || !handle_type2stash[type] ) {
+        croak("Invalid Handle type supplied");
+	}
+	
+	data_ptr = (handle_data_t *)malloc(sizeof(handle_data_t));
     if (NULL == data_ptr) {
         croak("Cannot allocate space for handle data.");
     }
 
     /* set the stash location */
-    data_ptr->stash = NULL;
-    if (type == UV_ASYNC) data_ptr->stash = stash_async;
-    if (type == UV_CHECK) data_ptr->stash = stash_check;
-    if (type == UV_FS_EVENT) data_ptr->stash = stash_fs_event;
-    if (type == UV_FS_POLL) data_ptr->stash = stash_fs_poll;
-    if (type == UV_HANDLE) data_ptr->stash = stash_handle;
-    if (type == UV_IDLE) data_ptr->stash = stash_idle;
-    if (type == UV_NAMED_PIPE) data_ptr->stash = stash_named_pipe;
-    if (type == UV_POLL) data_ptr->stash = stash_poll;
-    if (type == UV_PREPARE) data_ptr->stash = stash_prepare;
-    if (type == UV_PROCESS) data_ptr->stash = stash_process;
-    if (type == UV_STREAM) data_ptr->stash = stash_stream;
-    if (type == UV_TCP) data_ptr->stash = stash_tcp;
-    if (type == UV_TIMER) data_ptr->stash = stash_timer;
-    if (type == UV_TTY) data_ptr->stash = stash_tty;
-    if (type == UV_UDP) data_ptr->stash = stash_udp;
-    if (type == UV_SIGNAL) data_ptr->stash = stash_signal;
-    if (type == UV_FILE) data_ptr->stash = stash_file;
-    if (NULL == data_ptr->stash) {
-        free(data_ptr);
-        croak("Invalid Handle type supplied");
-    }
+    data_ptr->stash = handle_type2stash[type];
 
     /* setup the loop_sv slot */
     data_ptr->loop_sv = NULL;
@@ -373,6 +332,17 @@ static void handle_timer_cb(uv_timer_t* handle)
     LEAVE;
 }
 
+static HV * uverror2const = NULL;
+
+static SV* error_constant_dualvar(int uverror) {
+	SV * ret = newSVpv(uv_strerror(uverror), 0);
+	SvUPGRADE( ret, SVt_PVIV );
+	SvIVX( ret ) = uverror;
+	SvIOK_on( ret );
+	hv_store( uverror2const, &uverror, sizeof(uverror), ret, 0 );
+	return ret;
+}
+
 MODULE = UV             PACKAGE = UV            PREFIX = uv_
 
 PROTOTYPES: ENABLE
@@ -380,146 +350,166 @@ PROTOTYPES: ENABLE
 BOOT:
 {
     PERL_MATH_INT64_LOAD_OR_CROAK;
+	int i;
+    static char *handle_stash_names[UV_HANDLE_TYPE_MAX] = {
+		[UV_UNKNOWN_HANDLE] = NULL,
+		[UV_ASYNC] = "UV::Async",
+		[UV_CHECK] = "UV::Check",
+		[UV_FS_EVENT] = "UV::FSEvent",
+		[UV_FS_POLL] = "UV::FSPoll",
+		[UV_ASYNC] = "UV::Async",
+		[UV_CHECK] = "UV::Check",
+		[UV_HANDLE] = "UV::Handle",
+		[UV_IDLE] = "UV::Idle",
+		[UV_NAMED_PIPE] = "UV::NamedPipe",
+		[UV_POLL] = "UV::Poll",
+		[UV_PREPARE] = "UV::Prepare",
+		[UV_PROCESS] = "UV::Process",
+		[UV_STREAM] = "UV::Stream",
+		[UV_TCP] = "UV::TCP",
+		[UV_TIMER] = "UV::Timer",
+		[UV_TTY] = "UV::TTY",
+		[UV_UDP] = "UV::UDP",
+		[UV_SIGNAL] = "UV::Signal",
+		[UV_FILE] = "UV::File"
+	};
+	static char *request_stash_names[UV_REQ_TYPE_MAX] = {
+		[UV_UNKNOWN_REQ] = NULL,
+		[UV_REQ] = "UV::Req",
+		[UV_CONNECT] = "UV::Connect",
+		[UV_WRITE] = "UV::Write",
+		[UV_SHUTDOWN] = "UV::Shutdown",
+		[UV_UDP_SEND] = "UV::UDP::Send",
+		[UV_FS] = "UV::FS",
+		[UV_WORK] = "UV::Work",
+		[UV_GETADDRINFO] = "UV::GetAddrInfo",
+		[UV_GETNAMEINFO] = "UV::GetNameInfo",
+		[UV_REQ_TYPE_PRIVATE] = "UV::RquestTypePrivate"
+	};
     HV *stash = gv_stashpvn("UV", 2, TRUE);
+	
+	uverror2const = newHV();
 
+#define MYCONST(NAME) newCONSTSUB(stash, #NAME, newIV(NAME))
     /* expose the different request type constants */
-    newCONSTSUB(stash, "UV_REQ", newSViv(UV_REQ));
-    newCONSTSUB(stash, "UV_CONNECT", newSViv(UV_CONNECT));
-    newCONSTSUB(stash, "UV_WRITE", newSViv(UV_WRITE));
-    newCONSTSUB(stash, "UV_SHUTDOWN", newSViv(UV_SHUTDOWN));
-    newCONSTSUB(stash, "UV_UDP_SEND", newSViv(UV_UDP_SEND));
-    newCONSTSUB(stash, "UV_FS", newSViv(UV_FS));
-    newCONSTSUB(stash, "UV_WORK", newSViv(UV_WORK));
-    newCONSTSUB(stash, "UV_GETADDRINFO", newSViv(UV_GETADDRINFO));
-    newCONSTSUB(stash, "UV_GETNAMEINFO", newSViv(UV_GETNAMEINFO));
+    MYCONST(UV_REQ);
+    MYCONST(UV_CONNECT);
+    MYCONST(UV_WRITE);
+    MYCONST(UV_SHUTDOWN);
+    MYCONST(UV_UDP_SEND);
+    MYCONST(UV_FS);
+    MYCONST(UV_WORK);
+    MYCONST(UV_GETADDRINFO);
+    MYCONST(UV_GETNAMEINFO);
 
     /* expose the different handle type constants */
-    newCONSTSUB(stash, "UV_ASYNC", newSViv(UV_ASYNC));
-    newCONSTSUB(stash, "UV_CHECK", newSViv(UV_CHECK));
-    newCONSTSUB(stash, "UV_FS_EVENT", newSViv(UV_FS_EVENT));
-    newCONSTSUB(stash, "UV_FS_POLL", newSViv(UV_FS_POLL));
-    newCONSTSUB(stash, "UV_HANDLE", newSViv(UV_HANDLE));
-    newCONSTSUB(stash, "UV_IDLE", newSViv(UV_IDLE));
-    newCONSTSUB(stash, "UV_NAMED_PIPE", newSViv(UV_NAMED_PIPE));
-    newCONSTSUB(stash, "UV_POLL", newSViv(UV_POLL));
-    newCONSTSUB(stash, "UV_PREPARE", newSViv(UV_PREPARE));
-    newCONSTSUB(stash, "UV_PROCESS", newSViv(UV_PROCESS));
-    newCONSTSUB(stash, "UV_STREAM", newSViv(UV_STREAM));
-    newCONSTSUB(stash, "UV_TCP", newSViv(UV_TCP));
-    newCONSTSUB(stash, "UV_TIMER", newSViv(UV_TIMER));
-    newCONSTSUB(stash, "UV_TTY", newSViv(UV_TTY));
-    newCONSTSUB(stash, "UV_UDP", newSViv(UV_UDP));
-    newCONSTSUB(stash, "UV_SIGNAL", newSViv(UV_SIGNAL));
-    newCONSTSUB(stash, "UV_FILE", newSViv(UV_FILE));
+    MYCONST(UV_ASYNC);
+    MYCONST(UV_CHECK);
+    MYCONST(UV_FS_EVENT);
+    MYCONST(UV_FS_POLL);
+    MYCONST(UV_HANDLE);
+    MYCONST(UV_IDLE);
+    MYCONST(UV_NAMED_PIPE);
+    MYCONST(UV_POLL);
+    MYCONST(UV_PREPARE);
+    MYCONST(UV_PROCESS);
+    MYCONST(UV_STREAM);
+    MYCONST(UV_TCP);
+    MYCONST(UV_TIMER);
+    MYCONST(UV_TTY);
+    MYCONST(UV_UDP);
+    MYCONST(UV_SIGNAL);
+    MYCONST(UV_FILE);
 
     /* expose the different error constants */
-    newCONSTSUB(stash, "UV_E2BIG", newSViv(UV_E2BIG));
-    newCONSTSUB(stash, "UV_EACCES", newSViv(UV_EACCES));
-    newCONSTSUB(stash, "UV_EADDRINUSE", newSViv(UV_EADDRINUSE));
-    newCONSTSUB(stash, "UV_EADDRNOTAVAIL", newSViv(UV_EADDRNOTAVAIL));
-    newCONSTSUB(stash, "UV_EAFNOSUPPORT", newSViv(UV_EAFNOSUPPORT));
-    newCONSTSUB(stash, "UV_EAGAIN", newSViv(UV_EAGAIN));
-    newCONSTSUB(stash, "UV_EAI_ADDRFAMILY", newSViv(UV_EAI_ADDRFAMILY));
-    newCONSTSUB(stash, "UV_EAI_AGAIN", newSViv(UV_EAI_AGAIN));
-    newCONSTSUB(stash, "UV_EAI_BADFLAGS", newSViv(UV_EAI_BADFLAGS));
-    newCONSTSUB(stash, "UV_EAI_BADHINTS", newSViv(UV_EAI_BADHINTS));
-    newCONSTSUB(stash, "UV_EAI_CANCELED", newSViv(UV_EAI_CANCELED));
-    newCONSTSUB(stash, "UV_EAI_FAIL", newSViv(UV_EAI_FAIL));
-    newCONSTSUB(stash, "UV_EAI_FAMILY", newSViv(UV_EAI_FAMILY));
-    newCONSTSUB(stash, "UV_EAI_MEMORY", newSViv(UV_EAI_MEMORY));
-    newCONSTSUB(stash, "UV_EAI_NODATA", newSViv(UV_EAI_NODATA));
-    newCONSTSUB(stash, "UV_EAI_NONAME", newSViv(UV_EAI_NONAME));
-    newCONSTSUB(stash, "UV_EAI_OVERFLOW", newSViv(UV_EAI_OVERFLOW));
-    newCONSTSUB(stash, "UV_EAI_PROTOCOL", newSViv(UV_EAI_PROTOCOL));
-    newCONSTSUB(stash, "UV_EAI_SERVICE", newSViv(UV_EAI_SERVICE));
-    newCONSTSUB(stash, "UV_EAI_SOCKTYPE", newSViv(UV_EAI_SOCKTYPE));
-    newCONSTSUB(stash, "UV_EALREADY", newSViv(UV_EALREADY));
-    newCONSTSUB(stash, "UV_EBADF", newSViv(UV_EBADF));
-    newCONSTSUB(stash, "UV_EBUSY", newSViv(UV_EBUSY));
-    newCONSTSUB(stash, "UV_ECANCELED", newSViv(UV_ECANCELED));
-    newCONSTSUB(stash, "UV_ECHARSET", newSViv(UV_ECHARSET));
-    newCONSTSUB(stash, "UV_ECONNABORTED", newSViv(UV_ECONNABORTED));
-    newCONSTSUB(stash, "UV_ECONNREFUSED", newSViv(UV_ECONNREFUSED));
-    newCONSTSUB(stash, "UV_ECONNRESET", newSViv(UV_ECONNRESET));
-    newCONSTSUB(stash, "UV_EDESTADDRREQ", newSViv(UV_EDESTADDRREQ));
-    newCONSTSUB(stash, "UV_EEXIST", newSViv(UV_EEXIST));
-    newCONSTSUB(stash, "UV_EFAULT", newSViv(UV_EFAULT));
-    newCONSTSUB(stash, "UV_EFBIG", newSViv(UV_EFBIG));
-    newCONSTSUB(stash, "UV_EHOSTUNREACH", newSViv(UV_EHOSTUNREACH));
-    newCONSTSUB(stash, "UV_EINTR", newSViv(UV_EINTR));
-    newCONSTSUB(stash, "UV_EINVAL", newSViv(UV_EINVAL));
-    newCONSTSUB(stash, "UV_EIO", newSViv(UV_EIO));
-    newCONSTSUB(stash, "UV_EISCONN", newSViv(UV_EISCONN));
-    newCONSTSUB(stash, "UV_EISDIR", newSViv(UV_EISDIR));
-    newCONSTSUB(stash, "UV_ELOOP", newSViv(UV_ELOOP));
-    newCONSTSUB(stash, "UV_EMFILE", newSViv(UV_EMFILE));
-    newCONSTSUB(stash, "UV_EMSGSIZE", newSViv(UV_EMSGSIZE));
-    newCONSTSUB(stash, "UV_ENAMETOOLONG", newSViv(UV_ENAMETOOLONG));
-    newCONSTSUB(stash, "UV_ENETDOWN", newSViv(UV_ENETDOWN));
-    newCONSTSUB(stash, "UV_ENETUNREACH", newSViv(UV_ENETUNREACH));
-    newCONSTSUB(stash, "UV_ENFILE", newSViv(UV_ENFILE));
-    newCONSTSUB(stash, "UV_ENOBUFS", newSViv(UV_ENOBUFS));
-    newCONSTSUB(stash, "UV_ENODEV", newSViv(UV_ENODEV));
-    newCONSTSUB(stash, "UV_ENOENT", newSViv(UV_ENOENT));
-    newCONSTSUB(stash, "UV_ENOMEM", newSViv(UV_ENOMEM));
-    newCONSTSUB(stash, "UV_ENONET", newSViv(UV_ENONET));
-    newCONSTSUB(stash, "UV_ENOPROTOOPT", newSViv(UV_ENOPROTOOPT));
-    newCONSTSUB(stash, "UV_ENOSPC", newSViv(UV_ENOSPC));
-    newCONSTSUB(stash, "UV_ENOSYS", newSViv(UV_ENOSYS));
-    newCONSTSUB(stash, "UV_ENOTCONN", newSViv(UV_ENOTCONN));
-    newCONSTSUB(stash, "UV_ENOTDIR", newSViv(UV_ENOTDIR));
-    newCONSTSUB(stash, "UV_ENOTEMPTY", newSViv(UV_ENOTEMPTY));
-    newCONSTSUB(stash, "UV_ENOTSOCK", newSViv(UV_ENOTSOCK));
-    newCONSTSUB(stash, "UV_ENOTSUP", newSViv(UV_ENOTSUP));
-    newCONSTSUB(stash, "UV_EPERM", newSViv(UV_EPERM));
-    newCONSTSUB(stash, "UV_EPIPE", newSViv(UV_EPIPE));
-    newCONSTSUB(stash, "UV_EPROTO", newSViv(UV_EPROTO));
-    newCONSTSUB(stash, "UV_EPROTONOSUPPORT", newSViv(UV_EPROTONOSUPPORT));
-    newCONSTSUB(stash, "UV_EPROTOTYPE", newSViv(UV_EPROTOTYPE));
-    newCONSTSUB(stash, "UV_ERANGE", newSViv(UV_ERANGE));
-    newCONSTSUB(stash, "UV_EROFS", newSViv(UV_EROFS));
-    newCONSTSUB(stash, "UV_ESHUTDOWN", newSViv(UV_ESHUTDOWN));
-    newCONSTSUB(stash, "UV_ESPIPE", newSViv(UV_ESPIPE));
-    newCONSTSUB(stash, "UV_ESRCH", newSViv(UV_ESRCH));
-    newCONSTSUB(stash, "UV_ETIMEDOUT", newSViv(UV_ETIMEDOUT));
-    newCONSTSUB(stash, "UV_ETXTBSY", newSViv(UV_ETXTBSY));
-    newCONSTSUB(stash, "UV_EXDEV", newSViv(UV_EXDEV));
-    newCONSTSUB(stash, "UV_UNKNOWN", newSViv(UV_UNKNOWN));
-    newCONSTSUB(stash, "UV_EOF", newSViv(UV_EOF));
-    newCONSTSUB(stash, "UV_ENXIO", newSViv(UV_ENXIO));
-    newCONSTSUB(stash, "UV_EMLINK", newSViv(UV_EMLINK));
+#define MYERRCONST(NAME) newCONSTSUB(stash, #NAME, error_constant_dualvar(NAME))
+    MYERRCONST(UV_E2BIG);
+    MYERRCONST(UV_EACCES);
+    MYERRCONST(UV_EADDRINUSE);
+    MYERRCONST(UV_EADDRNOTAVAIL);
+    MYERRCONST(UV_EAFNOSUPPORT);
+    MYERRCONST(UV_EAGAIN);
+    MYERRCONST(UV_EAI_ADDRFAMILY);
+    MYERRCONST(UV_EAI_AGAIN);
+    MYERRCONST(UV_EAI_BADFLAGS);
+    MYERRCONST(UV_EAI_BADHINTS);
+    MYERRCONST(UV_EAI_CANCELED);
+    MYERRCONST(UV_EAI_FAIL);
+    MYERRCONST(UV_EAI_FAMILY);
+    MYERRCONST(UV_EAI_MEMORY);
+    MYERRCONST(UV_EAI_NODATA);
+    MYERRCONST(UV_EAI_NONAME);
+    MYERRCONST(UV_EAI_OVERFLOW);
+    MYERRCONST(UV_EAI_PROTOCOL);
+    MYERRCONST(UV_EAI_SERVICE);
+    MYERRCONST(UV_EAI_SOCKTYPE);
+    MYERRCONST(UV_EALREADY);
+    MYERRCONST(UV_EBADF);
+    MYERRCONST(UV_EBUSY);
+    MYERRCONST(UV_ECANCELED);
+    MYERRCONST(UV_ECHARSET);
+    MYERRCONST(UV_ECONNABORTED);
+    MYERRCONST(UV_ECONNREFUSED);
+    MYERRCONST(UV_ECONNRESET);
+    MYERRCONST(UV_EDESTADDRREQ);
+    MYERRCONST(UV_EEXIST);
+    MYERRCONST(UV_EFAULT);
+    MYERRCONST(UV_EFBIG);
+    MYERRCONST(UV_EHOSTUNREACH);
+    MYERRCONST(UV_EINTR);
+    MYERRCONST(UV_EINVAL);
+    MYERRCONST(UV_EIO);
+    MYERRCONST(UV_EISCONN);
+    MYERRCONST(UV_EISDIR);
+    MYERRCONST(UV_ELOOP);
+    MYERRCONST(UV_EMFILE);
+    MYERRCONST(UV_EMSGSIZE);
+    MYERRCONST(UV_ENAMETOOLONG);
+    MYERRCONST(UV_ENETDOWN);
+    MYERRCONST(UV_ENETUNREACH);
+    MYERRCONST(UV_ENFILE);
+    MYERRCONST(UV_ENOBUFS);
+    MYERRCONST(UV_ENODEV);
+    MYERRCONST(UV_ENOENT);
+    MYERRCONST(UV_ENOMEM);
+    MYERRCONST(UV_ENONET);
+    MYERRCONST(UV_ENOPROTOOPT);
+    MYERRCONST(UV_ENOSPC);
+    MYERRCONST(UV_ENOSYS);
+    MYERRCONST(UV_ENOTCONN);
+    MYERRCONST(UV_ENOTDIR);
+    MYERRCONST(UV_ENOTEMPTY);
+    MYERRCONST(UV_ENOTSOCK);
+    MYERRCONST(UV_ENOTSUP);
+    MYERRCONST(UV_EPERM);
+    MYERRCONST(UV_EPIPE);
+    MYERRCONST(UV_EPROTO);
+    MYERRCONST(UV_EPROTONOSUPPORT);
+    MYERRCONST(UV_EPROTOTYPE);
+    MYERRCONST(UV_ERANGE);
+    MYERRCONST(UV_EROFS);
+    MYERRCONST(UV_ESHUTDOWN);
+    MYERRCONST(UV_ESPIPE);
+    MYERRCONST(UV_ESRCH);
+    MYERRCONST(UV_ETIMEDOUT);
+    MYERRCONST(UV_ETXTBSY);
+    MYERRCONST(UV_EXDEV);
+    MYERRCONST(UV_UNKNOWN);
+    MYERRCONST(UV_EOF);
+    MYERRCONST(UV_ENXIO);
+    MYERRCONST(UV_EMLINK);
 
 
     /* build out our stashes */
     stash_loop          = gv_stashpv("UV::Loop",        TRUE);
-
-    stash_async         = gv_stashpv("UV::Async",       TRUE);
-    stash_check         = gv_stashpv("UV::Check",       TRUE);
-    stash_fs_event      = gv_stashpv("UV::FSEvent",     TRUE);
-    stash_fs_poll       = gv_stashpv("UV::FSPoll",      TRUE);
-    stash_handle        = gv_stashpv("UV::Handle",      TRUE);
-    stash_idle          = gv_stashpv("UV::Idle",        TRUE);
-    stash_named_pipe    = gv_stashpv("UV::NamedPipe",   TRUE);
-    stash_poll          = gv_stashpv("UV::Poll",        TRUE);
-    stash_prepare       = gv_stashpv("UV::Prepare",     TRUE);
-    stash_process       = gv_stashpv("UV::Process",     TRUE);
-    stash_stream        = gv_stashpv("UV::Stream",      TRUE);
-    stash_tcp           = gv_stashpv("UV::TCP",         TRUE);
-    stash_timer         = gv_stashpv("UV::Timer",       TRUE);
-    stash_tty           = gv_stashpv("UV::TTY",         TRUE);
-    stash_udp           = gv_stashpv("UV::UDP",         TRUE);
-    stash_signal        = gv_stashpv("UV::Signal",      TRUE);
-    stash_file          = gv_stashpv("UV::File",        TRUE);
-
-    stash_req           = gv_stashpv("UV::Req",         TRUE);
-    stash_connect       = gv_stashpv("UV::Connect",     TRUE);
-    stash_write         = gv_stashpv("UV::Write",       TRUE);
-    stash_shutdown      = gv_stashpv("UV::Shutdown",    TRUE);
-    stash_udp_send      = gv_stashpv("UV::UDP::Send",   TRUE);
-    stash_fs            = gv_stashpv("UV::FS",          TRUE);
-    stash_work          = gv_stashpv("UV::Work",        TRUE);
-    stash_getaddrinfo   = gv_stashpv("UV::GetAddrInfo", TRUE);
-    stash_getnameinfo   = gv_stashpv("UV::GetNameInfo", TRUE);
+	for( i = 0; i < UV_HANDLE_TYPE_MAX; ++i ) {
+		if( handle_stash_names[i] == NULL ) continue;
+		handle_type2stash[i] = gv_stashpv(handle_stash_names[i], TRUE);
+	}
+	for( i = 0; i < ; ++i ) {
+		if( request_stash_names[i] == NULL ) continue;
+		request_type2stash[i] = gv_stashpv(request_stash_names[i], TRUE);
+	}
 
     {
         SV *sv = perl_get_sv("EV::API", TRUE);
@@ -650,9 +640,9 @@ PROTOTYPES: ENABLE
 BOOT:
 {
     HV *stash = gv_stashpvn("UV::Loop", 8, TRUE);
-    newCONSTSUB(stash, "UV_RUN_DEFAULT", newSViv(UV_RUN_DEFAULT));
-    newCONSTSUB(stash, "UV_RUN_ONCE", newSViv(UV_RUN_ONCE));
-    newCONSTSUB(stash, "UV_RUN_NOWAIT", newSViv(UV_RUN_NOWAIT));
+    MYCONST(UV_RUN_DEFAULT);
+    MYCONST(UV_RUN_ONCE);
+    MYCONST(UV_RUN_NOWAIT);
 }
 
 SV *new (SV *klass, int want_default = 0)
