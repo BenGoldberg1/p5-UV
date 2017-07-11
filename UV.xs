@@ -335,8 +335,9 @@ static void handle_timer_cb(uv_timer_t* handle)
 static HV * uverror2const = NULL;
 
 static SV* error_constant_dualvar(int uverror) {
-	SV * ret = newSVpv(uv_strerror(uverror), 0);
+	SV * ret = newSV();
 	SvUPGRADE( ret, SVt_PVIV );
+	sv_setpvs( ret, uv_strerror(uverror) );
 	SvIVX( ret ) = uverror;
 	SvIOK_on( ret );
 	hv_store( uverror2const, &uverror, sizeof(uverror), ret, 0 );
